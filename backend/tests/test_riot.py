@@ -83,13 +83,31 @@ async def test_http_failures_are_typed_and_sanitized(session,status,code,auth):
         await client.close()
 
 
+@pytest.mark.asyncio
+async def test_catalog_outage_retains_last_metadata(catalog):
+    catalog._loaded_until = 0
+    catalog.http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(503)))
+    try:
+        await catalog.load()
+        assert catalog.version == 'release-fixture'
+        assert catalog.active_season == 'current'
+    finally:
+        await catalog.http.aclose()
+
+
 def test_final_detail_surrender_draw_remake_and_rank(catalog):
     payload=detail()
     match=parse_match(payload,PUUID,23,catalog)
     assert match.rating_delta==23 and match.outcome=='win' and not match.is_remake
     assert parse_match(payload,'someone-else',None,catalog) is None
     payload['hasTempValues']=True
+    assert parse_match(payload,PUUID,23,catalog) == match
+    payload['tempValueT'] = 123
+    payload['players'][0]['tempValueT'] = 456
+    assert parse_match(payload,PUUID,23,catalog) == match
+    payload['players'][0]['stats'] = None
     assert parse_match(payload,PUUID,23,catalog) is None
+    payload['players'][0]['stats'] = detail()['players'][0]['stats']
     payload['hasTempValues']=False
     payload['matchInfo']['completionState']='VoteDraw'
     assert parse_match(payload,PUUID,None,catalog).outcome=='draw'

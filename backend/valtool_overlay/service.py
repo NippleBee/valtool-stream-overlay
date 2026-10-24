@@ -6,7 +6,7 @@ import httpx
 
 from . import demo
 from .models import Connection, Match, Rank, Settings, Snapshot
-from .riot import Catalog, RiotClient, RiotError, Session, SessionProvider, WaitingProvider, parse_match
+from .riot import Catalog, RiotClient, RiotError, Session, SessionNotReady, SessionProvider, WaitingProvider, parse_match
 from .statistics import calculate
 from .storage import Storage
 
@@ -115,6 +115,14 @@ class RiotWorker:
                         self.service.clear_account()
                         self._last_account = next_key
                     self._wakeup.set()
+                elif session and self.session and (
+                    session.access_token != self.session.access_token
+                    or session.entitlement_token != self.session.entitlement_token
+                    or session.version != self.session.version
+                ):
+                    if self._sync_task:
+                        self._sync_task.cancel()
+                    self._wakeup.set()
                 self.session = session
                 if session:
                     connection = self.service.connection.model_copy(update={
@@ -129,13 +137,18 @@ class RiotWorker:
                     self.service.set_connection(self.service.connection.model_copy(update={
                         "phase": "waiting", "message": "Waiting for Riot Client",
                         "authenticated": False, "riot_client_available": False, "valorant_running": False,
+                        "error": None,
                     }))
-            except (OSError, ValueError, httpx.HTTPError, RiotError):
+            except (OSError, ValueError, httpx.HTTPError, RiotError) as error:
                 if self._sync_task:
                     self._sync_task.cancel()
+                if isinstance(error, SessionNotReady) and self._last_account and not self._last_account.startswith(error.subject + ":"):
+                    self.service.clear_account()
+                    self._last_account = None
                 self.session = None
                 self.service.set_connection(self.service.connection.model_copy(update={
                     "phase": "waiting", "authenticated": False,
+                    "valorant_running": False,
                     "message": "Could not obtain a Riot session. Retrying automatically.",
                 }))
             await asyncio.sleep(2)
@@ -171,8 +184,10 @@ class RiotWorker:
                 self._sync_task = None
 
     async def sync(self, session: Session):
+        self.service.syncing = True
+        self.service.publish()
         await self.catalog.load()
-        rank = self.catalog.rank(await self.client.mmr(session))
+        rank = self.catalog.rank(await self._request(self.client.mmr, session))
         await asyncio.to_thread(self.service.storage.save_context, session.puuid, session.context())
         cached = {m.id: m for m in await asyncio.to_thread(self.service.storage.read_matches, session.cache_key)}
         self.service.rank, self.service.records = rank, cached
@@ -185,7 +200,7 @@ class RiotWorker:
         ratings: dict[str, int] = {}
         cursor = 0
         while True:
-            response = await self.client.updates(session, cursor)
+            response = await self._request(self.client.updates, session, cursor)
             page = response.get("Matches", [])
             before = len(ratings)
             for update in page:
@@ -201,13 +216,16 @@ class RiotWorker:
         for mid, record in list(cached.items()):
             if mid in ratings and record.rating_delta != ratings[mid]:
                 cached[mid] = record.model_copy(update={"rating_delta": ratings[mid]})
-                await asyncio.to_thread(self.service.storage.save_match, session.cache_key, cached[mid])
+                if cached[mid].is_final:
+                    await asyncio.to_thread(self.service.storage.save_match, session.cache_key, cached[mid])
 
         visited: set[str] = set()
+        inspected: set[str] = set()
         pending = False
+        pagination_error = None
         cursor = 0
         while True:
-            page = await self.client.history(session, cursor)
+            page = await self._request(self.client.history, session, cursor)
             items = page.get("History", [])
             self.service.total = page.get("Total")
 
@@ -215,25 +233,34 @@ class RiotWorker:
                 mid = item["MatchID"]
                 if mid in cached and cached[mid].is_final and cached[mid].outcome != "unknown":
                     return cached[mid]
-                return parse_match(await self.client.details(session, mid), session.puuid, ratings.get(mid), self.catalog)
+                return parse_match(await self._request(self.client.details, session, mid), session.puuid, ratings.get(mid), self.catalog)
 
             for index in range(0, len(items), 2):
                 records = await asyncio.gather(*(fetch(item) for item in items[index:index + 2]))
+                inspected.update(item['MatchID'] for item, record in zip(items[index:index + 2], records)
+                                 if record is None or not record.is_remake)
                 for record in records:
                     if record is None or record.outcome == "unknown":
                         pending = True
                         continue
                     visited.add(record.id)
                     cached[record.id] = record
-                    await asyncio.to_thread(self.service.storage.save_match, session.cache_key, record)
+                    if record.is_final:
+                        await asyncio.to_thread(self.service.storage.save_match, session.cache_key, record)
                 self.service.pending_details = pending
                 self.service.publish()
+                if settings.match_count is not None and settings.scope == "available" and len(inspected) >= target:
+                    break
             end, total = page.get("EndIndex", cursor), page.get("Total", 0)
             if not items or end >= total:
                 self.service.history_complete = not pending
                 break
             if end <= cursor:
-                self.service.sync_error = "History pagination did not advance. Retrying later."
+                pagination_error = "History pagination did not advance. Retrying later."
+                break
+            # Missing final details in the requested recent window should stay
+            # incomplete, rather than triggering a scan of the entire archive.
+            if settings.match_count is not None and settings.scope == "available" and len(inspected) >= target:
                 break
             count = sum(mid in visited and not m.is_remake and m.outcome != "unknown"
                         and (settings.scope != "act" or m.season_id == rank.season_id) for mid, m in cached.items())
@@ -242,7 +269,19 @@ class RiotWorker:
             cursor = end
         self.service.pending_details = pending
         self.service.syncing = False
-        if pending:
-            self.service.sync_error = "Waiting for final details of some matches."
+        self.service.sync_error = "Waiting for final details of some matches." if pending else pagination_error
         self.service.set_connection(self.service.connection.model_copy(update={"updated_at": datetime.now(UTC), "error": None}))
         self.service.publish()
+
+    async def _request(self, method, *args):
+        while True:
+            try:
+                return await method(*args)
+            except RiotError as error:
+                if error.status != 429:
+                    raise
+                self.service.sync_error = "Riot is limiting requests. Waiting before continuing the refresh."
+                self.service.publish()
+                # Keep this sync's cursors and completed work. Account/selection
+                # changes can cancel this await, just like an HTTP request.
+                await asyncio.sleep(error.retry_after if error.retry_after is not None else 30)

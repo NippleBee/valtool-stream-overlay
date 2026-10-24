@@ -28,6 +28,12 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:api
       - run: npm run test:e2e
+      - if: runner.os == 'Windows'
+        run: python -m pip install -r backend/requirements-build.txt
+      - if: runner.os == 'Windows'
+        run: python -m PyInstaller --noconfirm packaging/windows.spec
+      - if: runner.os == 'Windows'
+        run: python scripts/smoke-windows.py "dist/ValTool Stream Overlay/ValTool Stream Overlay.exe"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

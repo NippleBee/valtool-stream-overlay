@@ -21,6 +21,7 @@ class Model(BaseModel):
 
 class Settings(Model):
     layout: Literal["large", "compact", "mini"] = "compact"
+    render_scale: StrictInt = Field(default=2, ge=1, le=3)
     theme: Literal["midnight", "pastel"] = "midnight"
     accent: str = "#c4b5fd"
     background: str = "#14151f"
@@ -35,6 +36,7 @@ class Settings(Model):
     show_matches: StrictBool = True
     recent_count: StrictInt = Field(default=5, ge=1, le=10)
     show_last_delta: StrictBool = True
+    show_watermark: StrictBool = True
     hide_when_offline: StrictBool = False
 
     @field_validator("accent", "background", "text_color")

@@ -5,12 +5,14 @@ const snapshotFixture = () => structuredClone(fixture) as Snapshot
 
 describe('overlay contract', () => {
   it('reserves exactly the reported OBS canvas including the recent strip', () => {
-    expect(dimensions(defaults)).toEqual({ width: 300, height: 178 })
-    expect(dimensions({ ...defaults, showMatches: false })).toEqual({ width: 300, height: 134 })
+    expect(dimensions(defaults)).toEqual({ width: 600, height: 356 })
+    expect(dimensions({ ...defaults, showMatches: false })).toEqual({ width: 600, height: 268 })
     expect(dimensions({ ...defaults, layout: 'mini', showMatches: true })).toEqual({
-      width: 220,
-      height: 70,
+      width: 440,
+      height: 140,
     })
+    expect(dimensions({ ...defaults, renderScale: 1 })).toEqual({ width: 300, height: 178 })
+    expect(dimensions({ ...defaults, renderScale: 3 })).toEqual({ width: 900, height: 534 })
   })
   it('does not turn missing data or pending RR into zero', () => {
     const snapshot = snapshotFixture()

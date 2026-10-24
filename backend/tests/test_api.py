@@ -6,6 +6,12 @@ import pytest
 
 from valtool_overlay.app import create_app
 from valtool_overlay.models import Settings
+from valtool_overlay.riot import WaitingProvider
+
+
+@pytest.fixture(autouse=True)
+def offline_discovery(monkeypatch):
+    monkeypatch.setattr('valtool_overlay.windows.WindowsSessionProvider', lambda catalog: WaitingProvider())
 
 
 @pytest.mark.asyncio

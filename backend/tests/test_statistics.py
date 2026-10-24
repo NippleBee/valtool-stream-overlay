@@ -44,7 +44,8 @@ def test_missing_and_zero_deaths():
 
 @pytest.mark.parametrize('patch', [{'accent':'url(https://example.com)'}, {'layout':'mini'}, {'matchCount':0},
                                   {'matchCount':True}, {'opacity':float('nan')}, {'metrics':['kd','kd']},
-                                  {'showMatches':'false'}, {'title':'bad\ntext'}])
+                                  {'showMatches':'false'}, {'showWatermark':'false'}, {'renderScale':0}, {'renderScale':4},
+                                  {'renderScale':True}, {'renderScale':1.5}, {'title':'bad\ntext'}])
 def test_invalid_settings(patch):
     with pytest.raises(ValidationError):
         Settings.model_validate(Settings().json_data() | patch)

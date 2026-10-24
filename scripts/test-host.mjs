@@ -11,13 +11,16 @@ const child = backend([
   '-m',
   'valtool_overlay',
   '--no-browser',
+  '--no-tray',
   '--port',
   String(port),
   '--data-dir',
   data,
   '--editor-url-file',
   resolve(`.cache/editor-${port}.txt`),
-  ...(!process.argv.includes('--live') ? ['--demo'] : []),
+  ...(!process.argv.includes('--live')
+    ? ['--demo']
+    : ['--lockfile', join(data, 'missing-riot-lockfile')]),
 ])
 process.on('SIGINT', () => child.kill('SIGINT'))
 process.on('SIGTERM', () => child.kill('SIGTERM'))

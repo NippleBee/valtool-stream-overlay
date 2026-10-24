@@ -1,6 +1,7 @@
 import asyncio
 import json
 import secrets
+import sys
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from . import __version__
 from .models import Settings
 from .riot import Catalog, FileSessionProvider, RiotClient
+from .runtime import default_frontend_dir
 from .security import LocalSecurity
 from .service import OverlayService, RiotWorker
 from .storage import Storage
@@ -25,12 +27,15 @@ def create_app(data_dir: Path, *, port: int | None = None, demo: bool = False, d
     if worker is None:
         catalog = Catalog()
         provider = FileSessionProvider(lockfile, catalog) if lockfile else None
+        if provider is None and sys.platform == "win32" and not demo:
+            from .windows import WindowsSessionProvider
+            provider = WindowsSessionProvider(catalog)
         worker = RiotWorker(service, RiotClient(), provider, catalog)
     else:
         worker.service = service
     settings_lock = asyncio.Lock()
     stopping = asyncio.Event()
-    frontend = (frontend_dir or Path(__file__).resolve().parents[2] / "frontend" / "dist").resolve()
+    frontend = (frontend_dir or default_frontend_dir()).resolve()
 
     @asynccontextmanager
     async def lifespan(app):

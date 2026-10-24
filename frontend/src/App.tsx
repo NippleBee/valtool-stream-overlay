@@ -18,6 +18,7 @@ import {
   Monitor,
   Paintbrush,
   Plus,
+  Power,
   Radio,
   RefreshCw,
   Settings2,
@@ -150,6 +151,8 @@ export function App() {
   const [matches, setMatches] = useState<Match[]>([])
   const [matchesError, setMatchesError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
+  const [quitting, setQuitting] = useState(false)
+  const [appClosed, setAppClosed] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const queue = useRef<Promise<unknown>>(Promise.resolve())
   const generation = useRef(0)
@@ -168,7 +171,7 @@ export function App() {
         setSnapshot(value.snapshot)
         setSettings(value.snapshot.settings)
         settingsRef.current = value.snapshot.settings
-        setDemoPreview(value.snapshot.rank === null || value.snapshot.mode === 'demo')
+        setDemoPreview(value.snapshot.mode === 'demo')
       })
       .catch((error) => {
         if (alive) setLoadError(error.message)
@@ -179,10 +182,10 @@ export function App() {
     }
   }, [])
   useEffect(() => {
-    if (!editor) return
+    if (!editor || appClosed) return
     const key = new URL(editor.overlayUrl).pathname.split('/').pop()!
     return api.subscribe(key, setSnapshot, setHostConnected)
-  }, [editor])
+  }, [editor, appClosed])
   useEffect(() => {
     const element = previewStage.current
     if (!element) return
@@ -300,6 +303,25 @@ export function App() {
       setRefreshing(false)
     }
   }
+  async function quitApp() {
+    if (
+      !window.confirm(
+        'Quit ValTool Stream Overlay? OBS will stop receiving updates. To keep your overlay running, cancel and close only this browser tab.',
+      )
+    )
+      return
+    setQuitting(true)
+    clearTimeout(timer.current)
+    try {
+      await queue.current.catch(() => undefined)
+      await api.shutdown()
+      setAppClosed(true)
+    } catch (error) {
+      setToast((error as Error).message)
+    } finally {
+      setQuitting(false)
+    }
+  }
   function exportPreset() {
     if (!settings) return
     const preset = settings
@@ -361,17 +383,33 @@ export function App() {
         value.recentCount > 10 ||
         ['showMatches', 'showLastDelta', 'hideWhenOffline'].some(
           (key) => typeof value[key] !== 'boolean',
-        )
+        ) ||
+        (value.showWatermark !== undefined && typeof value.showWatermark !== 'boolean') ||
+        (value.renderScale !== undefined &&
+          (!Number.isInteger(value.renderScale) || value.renderScale < 1 || value.renderScale > 3))
       )
         throw new Error('Invalid preset format')
       const { autoStart: _legacyAutoStart, ...preset } = value
-      update(preset)
+      update({
+        ...preset,
+        showWatermark: value.showWatermark ?? true,
+        renderScale: value.renderScale ?? 2,
+      })
       setToast('Preset imported')
     } catch (error) {
       setToast(error instanceof Error ? error.message : 'Could not import preset')
     }
     if (fileInput.current) fileInput.current.value = ''
   }
+
+  if (appClosed)
+    return (
+      <div className="startup">
+        <img className="brand-logo" src="/logo.svg" alt="ValTool Stream Overlay" />
+        <h1>ValTool Stream Overlay is closed</h1>
+        <p>You can close this tab. Open the app again when you want to use your overlay.</p>
+      </div>
+    )
 
   if (!editor || !snapshot || !settings)
     return (
@@ -431,6 +469,27 @@ export function App() {
             </button>
           ))}
         </div>
+      </Field>
+      <Field
+        title="OBS render size"
+        trailing={<span className="field-value">{settings.renderScale}×</span>}
+      >
+        <div className="match-presets">
+          {[1, 2, 3].map((renderScale) => (
+            <button
+              key={renderScale}
+              aria-label={`OBS render size ${renderScale * 100}%`}
+              aria-pressed={settings.renderScale === renderScale}
+              className={settings.renderScale === renderScale ? 'selected' : ''}
+              onClick={() => update({ renderScale })}
+            >
+              {renderScale * 100}%
+            </button>
+          ))}
+        </div>
+        <p className="help-text">
+          200% is recommended for clearer text. Use the source dimensions shown in Add to OBS.
+        </p>
       </Field>
       <Field title="Theme">
         <div className="theme-options">
@@ -542,6 +601,12 @@ export function App() {
           onChange={(e) => update({ title: e.target.value })}
         />
       </Field>
+      <Toggle
+        label="Show watermark"
+        description="ValTool logo and name on the overlay"
+        checked={settings.showWatermark}
+        onChange={(showWatermark) => update({ showWatermark })}
+      />
     </>
   )
   const metrics = (
@@ -724,7 +789,6 @@ export function App() {
           <span>
             VALTOOL<small>STREAM OVERLAY</small>
           </span>
-          <span className="beta-label">BETA</span>
         </a>
         <div className="workspace-label">YOUR WORKSPACE</div>
         <nav aria-label="Main navigation">
@@ -745,25 +809,14 @@ export function App() {
             Connection
           </button>
         </nav>
-        <div className="sidebar-tip">
-          <span className="tip-icon">
-            <Sparkles size={17} />
-          </span>
-          <strong>Your stream. Your style.</strong>
-          <p>Choose your metrics and make the overlay your own.</p>
-          <button
-            onClick={() => {
-              setPage('editor')
-              setCategory('appearance')
-            }}
-          >
-            Customize appearance <ArrowUpRight size={13} />
-          </button>
-        </div>
         <div className="sidebar-bottom">
+          <button onClick={() => void quitApp()} disabled={!hostConnected || quitting}>
+            <Power size={16} />
+            {quitting ? 'Closing app…' : 'Quit app'}
+          </button>
           <button onClick={() => setGuide(true)}>
             <CircleHelp size={16} />
-            Add to OBS <ExternalLink size={12} />
+            Add to OBS <ExternalLink size={12} className="right-icon" />
           </button>
           <a
             href="https://github.com/NippleBee/valtool-stream-overlay"
@@ -819,7 +872,7 @@ export function App() {
                 {page === 'editor'
                   ? 'Choose your appearance and metrics. Everything else updates automatically.'
                   : page === 'matches'
-                    ? 'Match details from your local cache. History loads after connecting to Riot.'
+                    ? 'Your recent matches. Statistics update automatically after connecting to Riot.'
                     : 'Check the app status and your connection to VALORANT.'}
               </p>
             </div>
@@ -842,6 +895,11 @@ export function App() {
             <div className="notice error">
               {saveError}
               <button onClick={() => update({ ...settings })}>Retry saving</button>
+            </div>
+          )}
+          {snapshot.syncError && (
+            <div className="notice" role="status">
+              {snapshot.syncError}
             </div>
           )}
           {page === 'editor' ? (
@@ -1062,6 +1120,11 @@ export function App() {
                         Setup guide <ArrowUpRight size={13} />
                       </button>
                     </div>
+                    <p className="help-text obs-size-note">
+                      Set this exact width and height in OBS Browser Source properties. After
+                      changing the size, use Transform → Reset Transform in OBS, then position the
+                      card.
+                    </p>
                   </section>
                   <div className="under-preview">
                     <ShieldCheck size={14} />
@@ -1127,18 +1190,15 @@ export function App() {
                 <div className="mt-6 border-t border-studio-border pt-5">
                   <button
                     className="button secondary"
-                    disabled={!hostConnected}
-                    onClick={() => {
-                      void api
-                        .shutdown()
-                        .then(() => setHostConnected(false))
-                        .catch((error) => setToast(error.message))
-                    }}
+                    disabled={!hostConnected || quitting}
+                    onClick={() => void quitApp()}
                   >
-                    Stop local server
+                    <Power size={14} />
+                    {quitting ? 'Closing app…' : 'Quit ValTool Stream Overlay'}
                   </button>
                   <p className="help-text">
-                    OBS updates will stop. Launch the app again to restart the server.
+                    Closing this browser tab keeps the app and your OBS overlay running in the
+                    Windows tray. Quit the app to stop OBS updates.
                   </p>
                 </div>
               }
@@ -1151,7 +1211,7 @@ export function App() {
                   <h2>Recent matches</h2>
                 </div>
                 <span className="muted text-xs">
-                  {matches.length} cached{snapshot.mode === 'demo' ? ' · demo' : ''}
+                  {matches.length} matches{snapshot.mode === 'demo' ? ' · demo' : ''}
                 </span>
               </div>
               {matchesError ? (
@@ -1280,7 +1340,8 @@ export function App() {
                     Set the size to {size.width} × {size.height}
                   </b>
                   <p>
-                    The background is already transparent. Keep ValTool Stream Overlay running; you
+                    Enter these dimensions in Browser Source properties. Use Transform → Reset
+                    Transform after changing them, then position the card. Keep the app running; you
                     can close the settings tab.
                   </p>
                 </div>

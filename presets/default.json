@@ -3,6 +3,7 @@
   "name": "ValTool Midnight",
   "settings": {
     "layout": "compact",
+    "renderScale": 2,
     "theme": "midnight",
     "accent": "#c4b5fd",
     "background": "#14151f",
@@ -17,6 +18,7 @@
     "showMatches": true,
     "recentCount": 5,
     "showLastDelta": true,
+    "showWatermark": true,
     "hideWhenOffline": false
   }
 }

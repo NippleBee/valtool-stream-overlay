@@ -14,4 +14,6 @@ Inter and Barlow Condensed are bundled locally via `@fontsource-variable/inter` 
 
 ## Dependencies
 
+The Windows tray uses pystray (LGPL-3.0-or-later), Pillow (HPND), and six (MIT). Their wheel metadata and license files are included in the Windows bundle alongside the other Python runtime dependency notices.
+
 React, Vite, Tailwind CSS, Lucide, FastAPI, Uvicorn, httpx, Pydantic and their dependencies retain their respective upstream licenses. Versions are recorded in `package-lock.json` and `backend/requirements-dev.txt`. Distribution bundles must include applicable dependency license notices.

@@ -1,11 +1,8 @@
-"""OS-independent Riot transport. Windows process/lockfile discovery is a provider seam.
-
-No real Riot connection is attempted unless a lockfile provider is explicitly configured.
-Credentials never form part of the public snapshot or persistent storage.
-"""
+"""Riot transport. Credentials stay in backend memory and out of public snapshots."""
 
 import asyncio
 import base64
+import binascii
 import hashlib
 import json
 import re
@@ -80,6 +77,13 @@ class RiotError(Exception):
         return self.status == 401 or self.status == 400 and self.code == "BAD_CLAIMS" or self.status == 403 and self.code == "MISSING_ENTITLEMENT"
 
 
+class SessionNotReady(ValueError):
+    def __init__(self, subject: str):
+        UUID(subject)
+        self.subject = subject
+        super().__init__("Launch VALORANT to determine the region/shard")
+
+
 def check_response(response: httpx.Response):
     if response.is_success:
         return
@@ -105,6 +109,7 @@ def check_response(response: httpx.Response):
 class LocalRiotClient:
     def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None):
         self.transport = transport
+        self._routing: tuple[str, str, str] | None = None
 
     async def authenticate(self, lock: Lockfile, version: str) -> Session:
         # Only this fixed loopback client accepts Riot's local self-signed certificate.
@@ -116,22 +121,51 @@ class LocalRiotClient:
             tokens = response.json()
             response = await client.get("/product-session/v1/external-sessions")
             check_response(response)
+            if not isinstance(tokens, dict) or not all(isinstance(tokens.get(key), str) and tokens[key]
+                                                       for key in ("subject", "accessToken", "token")):
+                raise ValueError("Could not obtain a local Riot session")
+            sessions = response.json()
+            if not isinstance(sessions, dict):
+                raise ValueError("Invalid Riot product session response")
             region = shard = None
             running = False
-            for session in response.json().values():
+            for session in sessions.values():
+                if not isinstance(session, dict):
+                    continue
                 if session.get("productId") != "valorant":
                     continue
                 running |= str(session.get("phase", "")).lower() == "running"
-                for arg in session.get("launchConfiguration", {}).get("arguments", []):
+                launch = session.get("launchConfiguration") or {}
+                for arg in launch.get("arguments", []):
+                    if not isinstance(arg, str):
+                        continue
                     if arg.startswith("-ares-shard="):
                         shard = arg.split("=", 1)[1].lower()
                     elif arg.startswith("-ares-deployment="):
                         region = arg.split("=", 1)[1].lower()
+            # Current clients omit -ares-shard. The player-platform claim belongs
+            # to this authenticated subject; launcher locale/region is unrelated.
+            try:
+                part = tokens["accessToken"].split(".")[1]
+                claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+                claim_shard = claims.get("pp", {}).get("c")
+                if claims.get("sub") == tokens["subject"] and claim_shard in SHARDS:
+                    if shard and shard != claim_shard:
+                        raise ValueError("Conflicting Riot shard metadata")
+                    shard = claim_shard
+            except (IndexError, KeyError, TypeError, AttributeError, binascii.Error, json.JSONDecodeError, UnicodeDecodeError):
+                pass
+            if self._routing and self._routing[0] == tokens["subject"]:
+                _, old_shard, old_region = self._routing
+                if shard is None or shard == old_shard:
+                    shard, region = shard or old_shard, region or old_region
             if not region or not shard:
-                raise ValueError("Launch VALORANT to determine the region/shard")
-            if not version or not tokens.get("accessToken") or not tokens.get("token"):
+                raise SessionNotReady(tokens["subject"])
+            if not version:
                 raise ValueError("Could not obtain a local Riot session")
-            return Session(tokens["subject"], tokens["accessToken"], tokens["token"], shard, region, version, running)
+            result = Session(tokens["subject"], tokens["accessToken"], tokens["token"], shard, region, version, running)
+            self._routing = (result.puuid, result.shard, result.region)
+            return result
 
 
 class SessionProvider(Protocol):
@@ -140,7 +174,7 @@ class SessionProvider(Protocol):
 
 
 class WaitingProvider:
-    """Replace with Windows discovery; safe on every development OS."""
+    """Safe default on unsupported development operating systems."""
     async def discover(self):
         return None
 
@@ -150,31 +184,47 @@ class WaitingProvider:
 
 class FileSessionProvider:
     """Explicit --lockfile for integration/testing, not automatic OS discovery."""
-    def __init__(self, path: Path, catalog: "Catalog", local: LocalRiotClient | None = None):
+    def __init__(self, path: Path, catalog: "Catalog", local: LocalRiotClient | None = None, *, cache_seconds: float = 45):
         self.path, self.catalog = path, catalog
         self.local = local or LocalRiotClient()
         self._fingerprint = None
         self._cached: Session | None = None
         self._expires = 0.0
+        self.cache_seconds = cache_seconds
+        self.version_override: str | None = None
 
     def invalidate(self):
         self._expires = 0
 
+    def reset(self):
+        self._cached, self._fingerprint, self._expires = None, None, 0
+
     async def discover(self):
         try:
-            text = await asyncio.to_thread(self.path.read_text)
+            text = await asyncio.to_thread(self.path.read_text, encoding="utf-8")
         except FileNotFoundError:
-            self._cached, self._fingerprint = None, None
+            self.reset()
             return None
         lock = Lockfile.parse(text)
         fingerprint = hashlib.sha256(text.encode()).digest()
         if self._cached and self._fingerprint == fingerprint and time.monotonic() < self._expires:
             return self._cached
+        if self.version_override and not self.catalog.version:
+            self.catalog.version = self.version_override
         await self.catalog.load()
-        if not self.catalog.version:
+        version = self.version_override or self.catalog.version
+        if not version:
             raise ValueError("Could not determine the Riot client version")
-        self._cached = await self.local.authenticate(lock, self.catalog.version)
-        self._fingerprint, self._expires = fingerprint, time.monotonic() + 45
+        self._cached = await self.local.authenticate(lock, version)
+        # Do not accept a session authenticated while the client replaced its lock.
+        try:
+            if await asyncio.to_thread(self.path.read_text, encoding="utf-8") != text:
+                self.reset()
+                return None
+        except FileNotFoundError:
+            self.reset()
+            return None
+        self._fingerprint, self._expires = fingerprint, time.monotonic() + self.cache_seconds
         return self._cached
 
 
@@ -192,7 +242,7 @@ class RiotClient:
             raise ValueError("Only Riot endpoint paths are accepted")
         host = f"glz-{session.region}-1.{session.shard}.a.pvp.net" if glz else f"pd.{session.shard}.a.pvp.net"
         async with self._limit:
-            if delay := max(0, self._limited_until - time.monotonic()):
+            while (delay := self._limited_until - time.monotonic()) > 0:
                 await asyncio.sleep(delay)
             response = await self.http.get(f"https://{host}/{path.lstrip('/')}", headers={
                 "Authorization": f"Bearer {session.access_token}",
@@ -229,7 +279,7 @@ def rank_name(tier: int) -> str:
 
 def parse_match(payload: dict, puuid: str, delta: int | None, catalog: "Catalog | None" = None) -> Match | None:
     info = payload.get("matchInfo", {})
-    if not info.get("isCompleted") or payload.get("hasTempValues"):
+    if not info.get("isCompleted"):
         return None
     player = next((p for p in payload.get("players", []) if p.get("subject") == puuid), None)
     if not player or not isinstance(stats := player.get("stats"), dict):
@@ -295,6 +345,11 @@ class Catalog:
                 elif kind == "maps": self.maps = {m["mapUrl"]: m["displayName"] for m in data}
                 else: self.seasons = data
             self._loaded_until = time.monotonic() + 3600
+        except (httpx.HTTPError, ValueError, KeyError):
+            # A catalog outage must not discard the last usable version/metadata.
+            self._loaded_until = time.monotonic() + 30
+            if not self.version:
+                raise
         finally:
             if own_client:
                 await client.aclose()

@@ -1,6 +1,7 @@
 export type Layout = 'large' | 'compact' | 'mini'
 export interface Settings {
   layout: Layout
+  renderScale: number
   theme: 'midnight' | 'pastel'
   accent: string
   background: string
@@ -15,6 +16,7 @@ export interface Settings {
   showMatches: boolean
   recentCount: number
   showLastDelta: boolean
+  showWatermark: boolean
   hideWhenOffline: boolean
 }
 export interface Match {
@@ -95,6 +97,7 @@ export interface Editor {
 
 export const defaults: Settings = {
   layout: 'compact',
+  renderScale: 2,
   theme: 'midnight',
   accent: '#c4b5fd',
   background: '#14151f',
@@ -109,6 +112,7 @@ export const defaults: Settings = {
   showMatches: true,
   recentCount: 5,
   showLastDelta: true,
+  showWatermark: true,
   hideWhenOffline: false,
 }
 
@@ -126,13 +130,18 @@ export const metricList = [
   { id: 'leaderboard', label: 'TOP', description: 'Leaderboard position' },
 ]
 export const limits: Record<Layout, number> = { large: 6, compact: 3, mini: 1 }
-export function dimensions(settings: Settings) {
+export function layoutDimensions(settings: Settings) {
   const extra = settings.showMatches && settings.layout !== 'mini' ? 44 : 0
   return settings.layout === 'large'
     ? { width: 420, height: 266 + extra }
     : settings.layout === 'compact'
       ? { width: 300, height: 134 + extra }
       : { width: 220, height: 70 }
+}
+export function dimensions(settings: Settings) {
+  const size = layoutDimensions(settings)
+  const scale = settings.renderScale ?? 2
+  return { width: size.width * scale, height: size.height * scale }
 }
 export function signed(value: number | null) {
   return value === null ? '—' : `${value > 0 ? '+' : ''}${value}`

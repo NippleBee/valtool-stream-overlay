@@ -1,5 +1,5 @@
 import { test, expect, type BrowserContext } from '@playwright/test'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { defaults } from '../../frontend/src/types'
 
 let session: Awaited<ReturnType<BrowserContext['storageState']>>
@@ -82,6 +82,81 @@ test('aggregation window and recent strip stay independent', async ({ page }) =>
   await source.goto(overlay)
   await expect(source.locator('.overlay-stat').first()).toContainText('1.75')
   await expect(source.locator('.recent-agent')).toHaveCount(5)
+  await expect(source.locator('.overlay-match-count')).toHaveText('1 MATCH')
+  await source.close()
+})
+
+test('watermark toggles persist and every card shows the statistics match count without overlap', async ({
+  page,
+}) => {
+  mkdirSync('work/watermark', { recursive: true })
+  const source = await page.context().newPage()
+  await source.goto(overlay)
+  for (const theme of ['midnight', 'pastel'] as const) {
+    for (const layout of ['large', 'compact', 'mini'] as const) {
+      const metrics =
+        layout === 'large'
+          ? ['kd', 'winsLosses', 'winrate', 'acs', 'kda', 'rrNet']
+          : layout === 'compact'
+            ? ['kd', 'winsLosses', 'winrate']
+            : ['kd']
+      await page.request.put('/api/settings', {
+        headers: { Origin: 'http://127.0.0.1:32146' },
+        data: {
+          ...defaults,
+          theme,
+          layout,
+          metrics,
+          matchCount: 1,
+          recentCount: 5,
+          showWatermark: true,
+          ...(theme === 'pastel'
+            ? { background: '#d6b4d0', accent: '#a779a1', textColor: '#664d68' }
+            : {}),
+        },
+      })
+      const card = source.locator(`.overlay-card.${layout}.${theme}`)
+      await expect(card).toBeVisible()
+      await expect(card.locator('.overlay-match-count')).toHaveText('1 MATCH')
+      await expect(card.locator('.overlay-watermark')).toContainText('ValTool Stream Overlay')
+      await expect(card.locator('.overlay-watermark img')).toHaveJSProperty('complete', true)
+      expect(
+        await card
+          .locator('.overlay-watermark img')
+          .evaluate((image) => (image as HTMLImageElement).naturalWidth),
+      ).toBeGreaterThan(0)
+      const bounds = await card.evaluate((element) => {
+        const footer = element.querySelector<HTMLElement>('.overlay-footer')!
+        const surface = element.querySelector<HTMLElement>('.overlay-surface')!
+        const metrics = element.querySelector<HTMLElement>('.overlay-metrics')!
+        return {
+          footerTop: footer.getBoundingClientRect().top,
+          footerBottom: footer.getBoundingClientRect().bottom,
+          metricsBottom: metrics.getBoundingClientRect().bottom,
+          surfaceBottom: surface.getBoundingClientRect().bottom,
+          footerWidth: footer.clientWidth,
+          footerContentWidth: footer.scrollWidth,
+        }
+      })
+      expect(bounds.metricsBottom).toBeLessThanOrEqual(bounds.footerTop + 0.5)
+      expect(bounds.footerBottom).toBeLessThanOrEqual(bounds.surfaceBottom)
+      expect(bounds.footerContentWidth).toBeLessThanOrEqual(bounds.footerWidth)
+      await source.screenshot({
+        path: `work/watermark/${layout}-${theme}.png`,
+        clip: (await card.boundingBox()) ?? undefined,
+      })
+    }
+  }
+  await page.reload()
+  const toggle = page.getByRole('switch', { name: /^Show watermark/ })
+  await expect(toggle).toBeChecked()
+  await toggle.uncheck()
+  await expect(source.locator('.overlay-watermark')).toHaveCount(0)
+  await expect(source.locator('.overlay-match-count')).toHaveText('1 MATCH')
+  await page.reload()
+  await expect(page.getByRole('switch', { name: /^Show watermark/ })).not.toBeChecked()
+  await page.getByRole('switch', { name: /^Show watermark/ }).check()
+  await expect(source.locator('.overlay-watermark')).toBeVisible()
   await source.close()
 })
 
@@ -98,7 +173,40 @@ test('layout limits and metric selection persist after reload', async ({ page })
     'aria-pressed',
     'true',
   )
-  await expect(page.locator('.obs-footer')).toContainText('220 × 70')
+  await expect(page.locator('.obs-footer')).toContainText('440 × 140')
+})
+
+test('OBS render size uses a larger native canvas and fits legacy viewports without cropping', async ({
+  page,
+}) => {
+  mkdirSync('work/readability', { recursive: true })
+  const source = await page.context().newPage()
+  await source.goto(overlay)
+  await expect(
+    page.getByRole('button', { name: 'OBS render size 200%', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true')
+  await expect(source.locator('.overlay-card')).toHaveCSS('transform', 'none')
+  const actual = await source.locator('.overlay-card').boundingBox()
+  expect(actual?.width).toBe(600)
+  expect(actual?.height).toBe(356)
+  const label = await source.locator('.overlay-stat > span').first().boundingBox()
+  const value = await source.locator('.overlay-stat > strong').first().boundingBox()
+  expect(label!.height).toBeGreaterThanOrEqual(16)
+  expect(value!.height).toBeGreaterThanOrEqual(32)
+  await source.screenshot({ path: 'work/readability/compact-2x.png', clip: actual! })
+  await page.getByRole('button', { name: 'OBS render size 300%', exact: true }).click()
+  await expect(page.locator('.obs-footer')).toContainText('900 × 534')
+  await expect(source.locator('.overlay-card')).toHaveCSS('zoom', '3')
+  await source.setViewportSize({ width: 300, height: 178 })
+  await expect(source.locator('.overlay-card')).toHaveCSS('zoom', '1')
+  expect((await source.locator('.overlay-card').boundingBox())?.width).toBe(300)
+  await expect(source.locator('.overlay-match-count')).toBeVisible()
+  await source.setViewportSize({ width: 1440, height: 1040 })
+  await page.reload()
+  await expect(
+    page.getByRole('button', { name: 'OBS render size 300%', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true')
+  await source.close()
 })
 
 test('history and connection views are functional', async ({ page }) => {
@@ -114,6 +222,8 @@ test('normal mode keeps demo previews out of its OBS output', async ({ browser }
   const page = await context.newPage()
   await page.goto(readFileSync('.cache/editor-32147.txt', 'utf8'))
   await expect(page.getByRole('heading', { name: 'Your overlay, your style.' })).toBeVisible()
+  await expect(page.frameLocator('iframe').getByText('NO DATA')).toBeVisible()
+  await page.getByRole('switch', { name: 'Show sample data in preview' }).check()
   await expect(page.frameLocator('iframe').getByText('DIAMOND 2')).toBeVisible()
   const url = await page.getByLabel('OBS URL').inputValue()
   const output = await context.newPage()
@@ -123,6 +233,30 @@ test('normal mode keeps demo previews out of its OBS output', async ({ browser }
   await page.getByRole('button', { name: 'Connection', exact: true }).click()
   await expect(page.locator('.connection-checks')).toContainText('Waiting')
   await context.close()
+})
+
+test('quit app explains OBS impact and shows a closed state without reconnecting', async ({
+  page,
+}) => {
+  let shutdowns = 0
+  await page.route('**/api/shutdown', async (route) => {
+    shutdowns += 1
+    await route.fulfill({ status: 202, body: '' })
+  })
+  page.once('dialog', async (dialog) => {
+    expect(dialog.message()).toContain('OBS will stop receiving updates')
+    await dialog.dismiss()
+  })
+  await page.getByRole('button', { name: 'Quit app', exact: true }).click()
+  expect(shutdowns).toBe(0)
+  await expect(page.getByRole('heading', { name: 'Your overlay, your style.' })).toBeVisible()
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Quit app', exact: true }).click()
+  await expect(
+    page.getByRole('heading', { name: 'ValTool Stream Overlay is closed' }),
+  ).toBeVisible()
+  expect(shutdowns).toBe(1)
+  await expect(page.getByText('Reconnecting automatically.')).toHaveCount(0)
 })
 
 test('local API rejects foreign origins, missing editor sessions and invalid presets', async ({

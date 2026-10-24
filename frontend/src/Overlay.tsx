@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { ArrowDownRight, ArrowUpRight } from 'lucide-react'
-import { dimensions, metricList, metricValue, signed, type Snapshot } from './types'
+import { layoutDimensions, metricList, metricValue, signed, type Snapshot } from './types'
 import { loadOverlay, subscribe } from './api'
 
 export function RankEmblem({ tier = 0, name = 'Unranked' }: { tier?: number; name?: string }) {
@@ -38,9 +38,9 @@ export function AgentPortrait({ agentId, name }: { agentId?: string | null; name
   )
 }
 
-export function OverlayCard({ snapshot }: { snapshot: Snapshot }) {
+export function OverlayCard({ snapshot, scale }: { snapshot: Snapshot; scale?: number }) {
   const { settings: settings, rank, stats } = snapshot
-  const size = dimensions(settings)
+  const size = layoutDimensions(settings)
   const color = settings.textColor
   const style = {
     '--ov-accent': settings.accent,
@@ -51,10 +51,11 @@ export function OverlayCard({ snapshot }: { snapshot: Snapshot }) {
     '--ov-glow': `${settings.glow}px`,
     width: size.width,
     height: size.height,
+    zoom: scale ?? settings.renderScale ?? 2,
   } as CSSProperties
   const showBar = rank?.rr !== null && rank?.rr !== undefined && rank.tier >= 3 && rank.tier < 24
   if (settings.hideWhenOffline && !snapshot.connection.authenticated && snapshot.mode !== 'demo')
-    return <div style={{ width: size.width, height: size.height }} />
+    return <div style={{ width: size.width, height: size.height, zoom: style.zoom }} />
   return (
     <article
       className={`overlay-card ${settings.layout} ${settings.theme}`}
@@ -108,21 +109,28 @@ export function OverlayCard({ snapshot }: { snapshot: Snapshot }) {
             </div>
           ))}
         </div>
-        {settings.layout === 'large' && (
-          <div className="overlay-footer">
-            <span>
-              {stats.games} {stats.games === 1 ? 'MATCH' : 'MATCHES'}
+        <div className="overlay-footer">
+          <span
+            className="overlay-match-count"
+            aria-label={`${stats.games} ${stats.games === 1 ? 'match' : 'matches'} used in statistics`}
+          >
+            {stats.games} {stats.games === 1 ? 'MATCH' : 'MATCHES'}
+          </span>
+          {settings.showWatermark && (
+            <span className="overlay-watermark">
+              <img src="/logo.svg" alt="" aria-hidden="true" />
+              <span>ValTool Stream Overlay</span>
             </span>
-            {settings.showLastDelta && (
-              <span>
-                LAST MATCH{' '}
-                <b className={(stats.lastDelta ?? 0) >= 0 ? 'positive' : 'negative'}>
-                  {signed(stats.lastDelta)} RR
-                </b>
-              </span>
-            )}
-          </div>
-        )}
+          )}
+          {settings.layout === 'large' && settings.showLastDelta && (
+            <span>
+              LAST MATCH{' '}
+              <b className={(stats.lastDelta ?? 0) >= 0 ? 'positive' : 'negative'}>
+                {signed(stats.lastDelta)} RR
+              </b>
+            </span>
+          )}
+        </div>
       </div>
       {settings.showMatches && settings.layout !== 'mini' && (
         <div className="recent-strip">
@@ -154,6 +162,15 @@ export function OverlayCard({ snapshot }: { snapshot: Snapshot }) {
 export function OverlayPage({ token }: { token: string }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [error, setError] = useState(false)
+  const [viewport, setViewport] = useState(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }))
+  useEffect(() => {
+    const resize = () => setViewport({ width: window.innerWidth, height: window.innerHeight })
+    window.addEventListener('resize', resize)
+    return () => window.removeEventListener('resize', resize)
+  }, [])
   const preview = new URLSearchParams(location.search).get('preview') === 'demo'
   useEffect(() => {
     document.documentElement.classList.add('overlay-document')
@@ -182,5 +199,11 @@ export function OverlayPage({ token }: { token: string }) {
         Waiting for the app…
       </div>
     ) : null
-  return <OverlayCard snapshot={snapshot} />
+  const size = layoutDimensions(snapshot.settings)
+  const scale = Math.min(
+    snapshot.settings.renderScale ?? 2,
+    viewport.width / size.width,
+    viewport.height / size.height,
+  )
+  return <OverlayCard snapshot={snapshot} scale={scale} />
 }
