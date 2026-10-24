@@ -1,0 +1,10 @@
+package-lock.json
+artifacts
+.cache
+frontend/dist
+frontend/*.tsbuildinfo
+backend/.venv
+backend/.data
+**/__pycache__
+**/.pytest_cache
+node_modules

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "valtool-stream-overlay-backend"
+version = "0.2.0"
+description = "Local server for ValTool Stream Overlay"
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.162,<0.163", "uvicorn>=0.54,<0.55", "httpx>=0.28,<0.29"]
+
+[project.optional-dependencies]
+test = ["pytest>=9.1,<10", "pytest-asyncio>=1.4,<2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+include = ["valtool_overlay*"]

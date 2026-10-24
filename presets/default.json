@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "name": "ValTool Midnight",
+  "settings": {
+    "layout": "compact",
+    "theme": "midnight",
+    "accent": "#c4b5fd",
+    "background": "#14151f",
+    "textColor": "#f5f5fa",
+    "opacity": 0.94,
+    "radius": 18,
+    "glow": 25,
+    "title": "CURRENT RANK",
+    "metrics": ["kd", "winsLosses", "winrate"],
+    "matchCount": 20,
+    "scope": "available",
+    "showMatches": true,
+    "recentCount": 5,
+    "showLastDelta": true,
+    "hideWhenOffline": false
+  }
+}

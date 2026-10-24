@@ -1,0 +1,28 @@
+{
+  "name": "valtool-stream-overlay",
+  "version": "0.2.0",
+  "private": true,
+  "license": "MIT",
+  "workspaces": [
+    "frontend"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "npm run build --workspace frontend",
+    "start": "node scripts/backend.mjs",
+    "test": "node scripts/test.mjs",
+    "test:python": "node scripts/backend.mjs --pytest",
+    "test:e2e": "npm run build && playwright test",
+    "test:api": "npm run build && playwright test -c playwright.api.config.ts",
+    "check": "npm run check --workspace frontend",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.0",
+    "prettier": "^3.9.10"
+  }
+}
